@@ -1,296 +1,335 @@
 package stirling.software.SPDF.controller.api.security;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.security.KeyFactory;
-import java.security.KeyStore;
-import java.security.Principal;
-import java.security.PrivateKey;
-import java.security.Security;
+import java.awt.*;
+import java.io.*;
+import java.nio.file.Files;
+import java.security.*;
 import java.security.cert.Certificate;
+import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
-import java.security.spec.PKCS8EncodedKeySpec;
-import java.text.SimpleDateFormat;
-import java.util.Arrays;
-import java.util.Date;
+import java.util.Calendar;
 import java.util.List;
 
+import org.apache.commons.io.FileUtils;
+import org.apache.pdfbox.examples.signature.CreateSignatureBase;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.PDResources;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.pdmodel.common.PDStream;
+import org.apache.pdfbox.pdmodel.font.PDFont;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.pdmodel.font.Standard14Fonts.FontName;
+import org.apache.pdfbox.pdmodel.graphics.blend.BlendMode;
+import org.apache.pdfbox.pdmodel.graphics.form.PDFormXObject;
+import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
+import org.apache.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState;
+import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationWidget;
+import org.apache.pdfbox.pdmodel.interactive.annotation.PDAppearanceDictionary;
+import org.apache.pdfbox.pdmodel.interactive.annotation.PDAppearanceStream;
+import org.apache.pdfbox.pdmodel.interactive.digitalsignature.PDSignature;
+import org.apache.pdfbox.pdmodel.interactive.digitalsignature.SignatureOptions;
+import org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm;
+import org.apache.pdfbox.pdmodel.interactive.form.PDField;
+import org.apache.pdfbox.pdmodel.interactive.form.PDSignatureField;
+import org.apache.pdfbox.util.Matrix;
+import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
+import org.bouncycastle.asn1.x500.RDN;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x500.style.BCStyle;
+import org.bouncycastle.asn1.x500.style.IETFUtils;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
-import org.bouncycastle.util.io.pem.PemReader;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.bouncycastle.openssl.PEMDecryptorProvider;
+import org.bouncycastle.openssl.PEMEncryptedKeyPair;
+import org.bouncycastle.openssl.PEMKeyPair;
+import org.bouncycastle.openssl.PEMParser;
+import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
+import org.bouncycastle.openssl.jcajce.JceOpenSSLPKCS8DecryptorProviderBuilder;
+import org.bouncycastle.openssl.jcajce.JcePEMDecryptorProviderBuilder;
+import org.bouncycastle.operator.InputDecryptorProvider;
+import org.bouncycastle.operator.OperatorCreationException;
+import org.bouncycastle.pkcs.PKCS8EncryptedPrivateKeyInfo;
+import org.bouncycastle.pkcs.PKCSException;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
-import com.itextpdf.io.font.constants.StandardFonts;
-import com.itextpdf.kernel.font.PdfFont;
-import com.itextpdf.kernel.font.PdfFontFactory;
-import com.itextpdf.kernel.geom.Rectangle;
-import com.itextpdf.kernel.pdf.PdfDocument;
-import com.itextpdf.kernel.pdf.PdfPage;
-import com.itextpdf.kernel.pdf.PdfReader;
-import com.itextpdf.kernel.pdf.StampingProperties;
-import com.itextpdf.signatures.BouncyCastleDigest;
-import com.itextpdf.signatures.DigestAlgorithms;
-import com.itextpdf.signatures.IExternalDigest;
-import com.itextpdf.signatures.IExternalSignature;
-import com.itextpdf.signatures.PdfPKCS7;
-import com.itextpdf.signatures.PdfSignatureAppearance;
-import com.itextpdf.signatures.PdfSigner;
-import com.itextpdf.signatures.PrivateKeySignature;
-import com.itextpdf.signatures.SignatureUtil;
-
+import io.github.pixee.security.Filenames;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.tags.Tag;
+
+import lombok.extern.slf4j.Slf4j;
+import stirling.software.SPDF.model.api.security.SignPDFWithCertRequest;
+import stirling.software.SPDF.service.CustomPDDocumentFactory;
 import stirling.software.SPDF.utils.WebResponseUtils;
+
 @RestController
+@RequestMapping("/api/v1/security")
+@Slf4j
 @Tag(name = "Security", description = "Security APIs")
 public class CertSignController {
-
-    private static final Logger logger = LoggerFactory.getLogger(CertSignController.class);
 
     static {
         Security.addProvider(new BouncyCastleProvider());
     }
 
+    private final CustomPDDocumentFactory pdfDocumentFactory;
+
+    @Autowired
+    public CertSignController(CustomPDDocumentFactory pdfDocumentFactory) {
+        this.pdfDocumentFactory = pdfDocumentFactory;
+    }
+
+    private static void sign(
+            CustomPDDocumentFactory pdfDocumentFactory,
+            byte[] input,
+            OutputStream output,
+            CreateSignature instance,
+            Boolean showSignature,
+            Integer pageNumber,
+            String name,
+            String location,
+            String reason,
+            Boolean showLogo) {
+        try (PDDocument doc = pdfDocumentFactory.load(input)) {
+            PDSignature signature = new PDSignature();
+            signature.setFilter(PDSignature.FILTER_ADOBE_PPKLITE);
+            signature.setSubFilter(PDSignature.SUBFILTER_ADBE_PKCS7_DETACHED);
+            signature.setName(name);
+            signature.setLocation(location);
+            signature.setReason(reason);
+            signature.setSignDate(Calendar.getInstance());
+
+            if (showSignature) {
+                SignatureOptions signatureOptions = new SignatureOptions();
+                signatureOptions.setVisualSignature(
+                        instance.createVisibleSignature(doc, signature, pageNumber, showLogo));
+                signatureOptions.setPage(pageNumber);
+
+                doc.addSignature(signature, instance, signatureOptions);
+
+            } else {
+                doc.addSignature(signature, instance);
+            }
+            doc.saveIncremental(output);
+        } catch (Exception e) {
+            log.error("exception", e);
+        }
+    }
+
     @PostMapping(consumes = "multipart/form-data", value = "/cert-sign")
-    @Operation(summary = "Sign PDF with a Digital Certificate",
-        description = "This endpoint accepts a PDF file, a digital certificate and related information to sign the PDF. It then returns the digitally signed PDF file. Input:PDF Output:PDF Type:MF-SISO")
-    public ResponseEntity<byte[]> signPDF(
-        @RequestPart(required = true, value = "fileInput")
-        @Parameter(description = "The input PDF file to be signed")
-                MultipartFile pdf,
+    @Operation(
+            summary = "Sign PDF with a Digital Certificate",
+            description =
+                    "This endpoint accepts a PDF file, a digital certificate and related information to sign"
+                            + " the PDF. It then returns the digitally signed PDF file. Input:PDF Output:PDF"
+                            + " Type:SISO")
+    public ResponseEntity<byte[]> signPDFWithCert(@ModelAttribute SignPDFWithCertRequest request)
+            throws Exception {
+        MultipartFile pdf = request.getFileInput();
+        String certType = request.getCertType();
+        MultipartFile privateKeyFile = request.getPrivateKeyFile();
+        MultipartFile certFile = request.getCertFile();
+        MultipartFile p12File = request.getP12File();
+        MultipartFile jksfile = request.getJksFile();
+        String password = request.getPassword();
+        Boolean showSignature = request.isShowSignature();
+        String reason = request.getReason();
+        String location = request.getLocation();
+        String name = request.getName();
+        Integer pageNumber = request.getPageNumber() - 1;
+        Boolean showLogo = request.isShowLogo();
 
-        @RequestParam(value = "certType", required = false)
-        @Parameter(description = "The type of the digital certificate", schema = @Schema(allowableValues = {"PKCS12", "PEM"}))
-                String certType,
-
-        @RequestParam(value = "key", required = false)
-        @Parameter(description = "The private key for the digital certificate (required for PEM type certificates)")
-                MultipartFile privateKeyFile,
-
-        @RequestParam(value = "cert", required = false)
-        @Parameter(description = "The digital certificate (required for PEM type certificates)")
-                MultipartFile certFile,
-
-        @RequestParam(value = "p12", required = false)
-        @Parameter(description = "The PKCS12 keystore file (required for PKCS12 type certificates)")
-                MultipartFile p12File,
-
-        @RequestParam(value = "password", required = false)
-        @Parameter(description = "The password for the keystore or the private key")
-                String password,
-
-        @RequestParam(value = "showSignature", required = false)
-        @Parameter(description = "Whether to visually show the signature in the PDF file")
-                Boolean showSignature,
-
-        @RequestParam(value = "reason", required = false)
-        @Parameter(description = "The reason for signing the PDF")
-                String reason,
-
-        @RequestParam(value = "location", required = false)
-        @Parameter(description = "The location where the PDF is signed")
-                String location,
-
-        @RequestParam(value = "name", required = false)
-        @Parameter(description = "The name of the signer")
-                String name,
-
-        @RequestParam(value = "pageNumber", required = false)
-        @Parameter(description = "The page number where the signature should be visible. This is required if showSignature is set to true")
-                Integer pageNumber) throws Exception {
-        
-        BouncyCastleProvider provider = new BouncyCastleProvider();
-        Security.addProvider(provider);
-
-        PrivateKey privateKey = null;
-        X509Certificate cert = null;
-        
-        if (certType != null) {
-            switch (certType) {
-                case "PKCS12":
-                    if (p12File != null) {
-                        KeyStore ks = KeyStore.getInstance("PKCS12");
-                        ks.load(new ByteArrayInputStream(p12File.getBytes()), password.toCharArray());
-                        String alias = ks.aliases().nextElement();
-                        privateKey = (PrivateKey) ks.getKey(alias, password.toCharArray());
-                        cert = (X509Certificate) ks.getCertificate(alias);
-                    }
-                    break;
-                case "PEM":
-                    if (privateKeyFile != null && certFile != null) {
-                        // Load private key
-                        KeyFactory keyFactory = KeyFactory.getInstance("RSA", provider);
-                        if (isPEM(privateKeyFile.getBytes())) {
-                            privateKey = keyFactory.generatePrivate(new PKCS8EncodedKeySpec(parsePEM(privateKeyFile.getBytes())));
-                        } else {
-                            privateKey = keyFactory.generatePrivate(new PKCS8EncodedKeySpec(privateKeyFile.getBytes()));
-                        }
-
-                        // Load certificate
-                        CertificateFactory certFactory = CertificateFactory.getInstance("X.509", provider);
-                        if (isPEM(certFile.getBytes())) {
-                            cert = (X509Certificate) certFactory.generateCertificate(new ByteArrayInputStream(parsePEM(certFile.getBytes())));
-                        } else {
-                            cert = (X509Certificate) certFactory.generateCertificate(new ByteArrayInputStream(certFile.getBytes()));
-                        }
-                    }
-                    break;
-            }
+        if (certType == null) {
+            throw new IllegalArgumentException("Cert type must be provided");
         }
 
-        Principal principal = cert.getSubjectDN();
-        String dn = principal.getName();
+        KeyStore ks = null;
 
-        // Extract the "CN" (Common Name) field from the distinguished name (if it's present)
-        String cn = null;
-        for (String part : dn.split(",")) {
-            if (part.trim().startsWith("CN=")) {
-                cn = part.trim().substring("CN=".length());
+        switch (certType) {
+            case "PEM":
+                ks = KeyStore.getInstance("JKS");
+                ks.load(null);
+                PrivateKey privateKey = getPrivateKeyFromPEM(privateKeyFile.getBytes(), password);
+                Certificate cert = (Certificate) getCertificateFromPEM(certFile.getBytes());
+                ks.setKeyEntry(
+                        "alias", privateKey, password.toCharArray(), new Certificate[] {cert});
                 break;
-            }
+            case "PKCS12":
+                ks = KeyStore.getInstance("PKCS12");
+                ks.load(p12File.getInputStream(), password.toCharArray());
+                break;
+            case "JKS":
+                ks = KeyStore.getInstance("JKS");
+                ks.load(jksfile.getInputStream(), password.toCharArray());
+                break;
+            default:
+                throw new IllegalArgumentException("Invalid cert type: " + certType);
         }
-        
-        // Set up the PDF reader and stamper
-        PdfReader reader = new PdfReader(new ByteArrayInputStream(pdf.getBytes()));
-        ByteArrayOutputStream signedPdf = new ByteArrayOutputStream();
-        PdfSigner signer = new PdfSigner(reader, signedPdf, new StampingProperties());
 
-        // Set up the signing appearance
-        PdfSignatureAppearance appearance = signer.getSignatureAppearance()
-                .setReason("Test")
-                .setLocation("TestLocation");
-
-        if (showSignature != null && showSignature) {
-            float fontSize = 4;  // the font size of the signature
-            float marginRight = 36; // Margin from the right
-            float marginBottom = 36; // Margin from the bottom
-            String signingDate = new SimpleDateFormat("yyyy.MM.dd HH:mm:ss z").format(new Date());
-
-            // Prepare the text for the digital signature
-            StringBuilder layer2TextBuilder = new StringBuilder(String.format("Digitally signed by: %s\nDate: %s", 
-            	    name != null ? name : "Unknown", signingDate));
-
-        	if (reason != null && !reason.isEmpty()) {
-        		layer2TextBuilder.append("\nReason: ").append(reason);
-        	}
-
-        	if (location != null && !location.isEmpty()) {
-        		layer2TextBuilder.append("\nLocation: ").append(location);
-        	}
-            String 	layer2Text = layer2TextBuilder.toString();
-            // Get the PDF font and measure the width and height of the text block
-            PdfFont font = PdfFontFactory.createFont(StandardFonts.HELVETICA_BOLD);
-            float textWidth = Arrays.stream(layer2Text.split("\n"))
-                                    .map(line -> font.getWidth(line, fontSize))
-                                    .max(Float::compare)
-                                    .orElse(0f);
-            int numLines = layer2Text.split("\n").length;
-            float textHeight = numLines * fontSize;
-
-            // Calculate the signature rectangle size
-            float sigWidth = textWidth + marginRight * 2;
-            float sigHeight = textHeight + marginBottom * 2;
-
-            // Get the page size
-            PdfPage page = signer.getDocument().getPage(1);
-            Rectangle pageSize = page.getPageSize();
-
-            // Define the position and dimension of the signature field
-            Rectangle rect = new Rectangle(
-                pageSize.getRight() - sigWidth - marginRight,
-                pageSize.getBottom() + marginBottom,
-                sigWidth,
-                sigHeight
-            );
-
-            // Configure the appearance of the digital signature
-            appearance.setPageRect(rect)
-	            .setContact(name != null ? name : "")
-	            .setPageNumber(pageNumber)
-	            .setReason(reason != null ? reason : "")
-	            .setLocation(location != null ? location : "")
-	            .setReuseAppearance(false)
-	            .setLayer2Text(layer2Text.toString());
-
-            signer.setFieldName("sig");
-        } else {
-            appearance.setRenderingMode(PdfSignatureAppearance.RenderingMode.DESCRIPTION);
-        }
-        
-        // Set up the signer
-        PrivateKeySignature pks = new PrivateKeySignature(privateKey, DigestAlgorithms.SHA256, provider.getName());
-        IExternalSignature pss = new PrivateKeySignature(privateKey, DigestAlgorithms.SHA256, provider.getName());
-        IExternalDigest digest = new BouncyCastleDigest();
-
-        // Call iTex7 to sign the PDF
-        signer.signDetached(digest, pks, new Certificate[] {cert}, null, null, null, 0, PdfSigner.CryptoStandard.CMS);
-
-        
-        System.out.println("Signed PDF size: " + signedPdf.size());
-
-        System.out.println("PDF signed = " + isPdfSigned(signedPdf.toByteArray()));
-        return WebResponseUtils.bytesToWebResponse(signedPdf.toByteArray(), "example.pdf");
+        CreateSignature createSignature = new CreateSignature(ks, password.toCharArray());
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        sign(
+                pdfDocumentFactory,
+                pdf.getBytes(),
+                baos,
+                createSignature,
+                showSignature,
+                pageNumber,
+                name,
+                location,
+                reason,
+                showLogo);
+        return WebResponseUtils.boasToWebResponse(
+                baos,
+                Filenames.toSimpleFileName(pdf.getOriginalFilename()).replaceFirst("[.][^.]+$", "")
+                        + "_signed.pdf");
     }
 
-public boolean isPdfSigned(byte[] pdfData) throws IOException {
-    InputStream pdfStream = new ByteArrayInputStream(pdfData);
-    PdfDocument pdfDoc = new PdfDocument(new PdfReader(pdfStream));
-    SignatureUtil signatureUtil = new SignatureUtil(pdfDoc);
-    List<String> names = signatureUtil.getSignatureNames();
+    private PrivateKey getPrivateKeyFromPEM(byte[] pemBytes, String password)
+            throws IOException, OperatorCreationException, PKCSException {
+        try (PEMParser pemParser =
+                new PEMParser(new InputStreamReader(new ByteArrayInputStream(pemBytes)))) {
+            Object pemObject = pemParser.readObject();
+            JcaPEMKeyConverter converter = new JcaPEMKeyConverter().setProvider("BC");
+            PrivateKeyInfo pkInfo;
+            if (pemObject instanceof PKCS8EncryptedPrivateKeyInfo) {
+                InputDecryptorProvider decProv =
+                        new JceOpenSSLPKCS8DecryptorProviderBuilder().build(password.toCharArray());
+                pkInfo = ((PKCS8EncryptedPrivateKeyInfo) pemObject).decryptPrivateKeyInfo(decProv);
+            } else if (pemObject instanceof PEMEncryptedKeyPair) {
+                PEMDecryptorProvider decProv =
+                        new JcePEMDecryptorProviderBuilder().build(password.toCharArray());
+                pkInfo =
+                        ((PEMEncryptedKeyPair) pemObject)
+                                .decryptKeyPair(decProv)
+                                .getPrivateKeyInfo();
+            } else {
+                pkInfo = ((PEMKeyPair) pemObject).getPrivateKeyInfo();
+            }
+            return converter.getPrivateKey(pkInfo);
+        }
+    }
 
-    boolean isSigned = false;
+    private Certificate getCertificateFromPEM(byte[] pemBytes)
+            throws IOException, CertificateException {
+        try (ByteArrayInputStream bis = new ByteArrayInputStream(pemBytes)) {
+            return CertificateFactory.getInstance("X.509").generateCertificate(bis);
+        }
+    }
 
-    for (String name : names) {
-        PdfPKCS7 pkcs7 = signatureUtil.readSignatureData(name);
-        if (pkcs7 != null) {
-            System.out.println("Signature found.");
+    class CreateSignature extends CreateSignatureBase {
+        File logoFile;
 
-            // Log certificate details
-            Certificate[] signChain = pkcs7.getSignCertificateChain();
-            for (Certificate cert : signChain) {
-                if (cert instanceof X509Certificate) {
-                    X509Certificate x509 = (X509Certificate) cert;
-                    System.out.println("Certificate Details:");
-                    System.out.println("Subject: " + x509.getSubjectDN());
-                    System.out.println("Issuer: " + x509.getIssuerDN());
-                    System.out.println("Serial: " + x509.getSerialNumber());
-                    System.out.println("Not Before: " + x509.getNotBefore());
-                    System.out.println("Not After: " + x509.getNotAfter());
+        public CreateSignature(KeyStore keystore, char[] pin)
+                throws KeyStoreException,
+                        UnrecoverableKeyException,
+                        NoSuchAlgorithmException,
+                        IOException,
+                        CertificateException {
+            super(keystore, pin);
+            ClassPathResource resource = new ClassPathResource("static/images/signature.png");
+            try (InputStream is = resource.getInputStream()) {
+                logoFile = Files.createTempFile("signature", ".png").toFile();
+                FileUtils.copyInputStreamToFile(is, logoFile);
+            } catch (IOException e) {
+                log.error("Failed to load image signature file");
+                throw e;
+            }
+        }
+
+        public InputStream createVisibleSignature(
+                PDDocument srcDoc, PDSignature signature, Integer pageNumber, Boolean showLogo)
+                throws IOException {
+            // modified from org.apache.pdfbox.examples.signature.CreateVisibleSignature2
+            try (PDDocument doc = new PDDocument()) {
+                PDPage page = new PDPage(srcDoc.getPage(pageNumber).getMediaBox());
+                doc.addPage(page);
+                PDAcroForm acroForm = new PDAcroForm(doc);
+                doc.getDocumentCatalog().setAcroForm(acroForm);
+                PDSignatureField signatureField = new PDSignatureField(acroForm);
+                PDAnnotationWidget widget = signatureField.getWidgets().get(0);
+                List<PDField> acroFormFields = acroForm.getFields();
+                acroForm.setSignaturesExist(true);
+                acroForm.setAppendOnly(true);
+                acroForm.getCOSObject().setDirect(true);
+                acroFormFields.add(signatureField);
+
+                PDRectangle rect = new PDRectangle(0, 0, 200, 50);
+
+                widget.setRectangle(rect);
+
+                // from PDVisualSigBuilder.createHolderForm()
+                PDStream stream = new PDStream(doc);
+                PDFormXObject form = new PDFormXObject(stream);
+                PDResources res = new PDResources();
+                form.setResources(res);
+                form.setFormType(1);
+                PDRectangle bbox = new PDRectangle(rect.getWidth(), rect.getHeight());
+                float height = bbox.getHeight();
+                form.setBBox(bbox);
+                PDFont font = new PDType1Font(FontName.TIMES_BOLD);
+
+                // from PDVisualSigBuilder.createAppearanceDictionary()
+                PDAppearanceDictionary appearance = new PDAppearanceDictionary();
+                appearance.getCOSObject().setDirect(true);
+                PDAppearanceStream appearanceStream = new PDAppearanceStream(form.getCOSObject());
+                appearance.setNormalAppearance(appearanceStream);
+                widget.setAppearance(appearance);
+
+                try (PDPageContentStream cs = new PDPageContentStream(doc, appearanceStream)) {
+                    if (showLogo) {
+                        cs.saveGraphicsState();
+                        PDExtendedGraphicsState extState = new PDExtendedGraphicsState();
+                        extState.setBlendMode(BlendMode.MULTIPLY);
+                        extState.setNonStrokingAlphaConstant(0.5f);
+                        cs.setGraphicsStateParameters(extState);
+                        cs.transform(Matrix.getScaleInstance(0.08f, 0.08f));
+                        PDImageXObject img =
+                                PDImageXObject.createFromFileByExtension(logoFile, doc);
+                        cs.drawImage(img, 100, 0);
+                        cs.restoreGraphicsState();
+                    }
+
+                    // show text
+                    float fontSize = 10;
+                    float leading = fontSize * 1.5f;
+                    cs.beginText();
+                    cs.setFont(font, fontSize);
+                    cs.setNonStrokingColor(Color.black);
+                    cs.newLineAtOffset(fontSize, height - leading);
+                    cs.setLeading(leading);
+
+                    X509Certificate cert = (X509Certificate) getCertificateChain()[0];
+
+                    // https://stackoverflow.com/questions/2914521/
+                    X500Name x500Name = new X500Name(cert.getSubjectX500Principal().getName());
+                    RDN cn = x500Name.getRDNs(BCStyle.CN)[0];
+                    String name = IETFUtils.valueToString(cn.getFirst().getValue());
+
+                    String date = signature.getSignDate().getTime().toString();
+                    String reason = signature.getReason();
+
+                    cs.showText("Signed by " + name);
+                    cs.newLine();
+                    cs.showText(date);
+                    cs.newLine();
+                    cs.showText(reason);
+
+                    cs.endText();
                 }
-            }
 
-            isSigned = true;
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                doc.save(baos);
+                return new ByteArrayInputStream(baos.toByteArray());
+            }
         }
     }
-
-    pdfDoc.close();
-
-    return isSigned;
-}
-    private byte[] parsePEM(byte[] content) throws IOException {
-        PemReader pemReader = new PemReader(new InputStreamReader(new ByteArrayInputStream(content)));
-        return pemReader.readPemObject().getContent();
-    }
-
-    private boolean isPEM(byte[] content) {
-        String contentStr = new String(content);
-        return contentStr.contains("-----BEGIN") && contentStr.contains("-----END");
-    }
-   
-
-    
-
-
 }

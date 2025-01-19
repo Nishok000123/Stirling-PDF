@@ -1,36 +1,56 @@
 package stirling.software.SPDF.config;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.Properties;
-
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
+import io.swagger.v3.oas.models.security.SecurityRequirement;
+import io.swagger.v3.oas.models.security.SecurityScheme;
+
+import stirling.software.SPDF.model.ApplicationProperties;
 
 @Configuration
 public class OpenApiConfig {
 
-	@Bean
-	public OpenAPI customOpenAPI() {
-	    String version = getClass().getPackage().getImplementationVersion();
-	    if (version == null) {
-	        Properties props = new Properties();
-	        try (InputStream input = getClass().getClassLoader().getResourceAsStream("version.properties")) {
-	            props.load(input);
-	            version = props.getProperty("version");
-	        } catch (IOException ex) {
-	            ex.printStackTrace();
-	            version = "1.0.0"; // default version if all else fails
-	        }
-	    }
+    private final ApplicationProperties applicationProperties;
 
-	    return new OpenAPI().components(new Components()).info(
-	            new Info().title("Stirling PDF API").version(version).description("API documentation for all Server-Side processing.\nPlease note some functionality might be UI only and missing from here."));
-	}
+    public OpenApiConfig(ApplicationProperties applicationProperties) {
+        this.applicationProperties = applicationProperties;
+    }
 
-
+    @Bean
+    public OpenAPI customOpenAPI() {
+        String version = getClass().getPackage().getImplementationVersion();
+        if (version == null) {
+            // default version if all else fails
+            version = "1.0.0";
+        }
+        SecurityScheme apiKeyScheme =
+                new SecurityScheme()
+                        .type(SecurityScheme.Type.APIKEY)
+                        .in(SecurityScheme.In.HEADER)
+                        .name("X-API-KEY");
+        if (!applicationProperties.getSecurity().getEnableLogin()) {
+            return new OpenAPI()
+                    .components(new Components())
+                    .info(
+                            new Info()
+                                    .title("Stirling PDF API")
+                                    .version(version)
+                                    .description(
+                                            "API documentation for all Server-Side processing.\nPlease note some functionality might be UI only and missing from here."));
+        } else {
+            return new OpenAPI()
+                    .components(new Components().addSecuritySchemes("apiKey", apiKeyScheme))
+                    .info(
+                            new Info()
+                                    .title("Stirling PDF API")
+                                    .version(version)
+                                    .description(
+                                            "API documentation for all Server-Side processing.\nPlease note some functionality might be UI only and missing from here."))
+                    .addSecurityItem(new SecurityRequirement().addList("apiKey"));
+        }
+    }
 }

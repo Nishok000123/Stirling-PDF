@@ -1,82 +1,107 @@
 package stirling.software.SPDF.controller.api.security;
+
+import java.io.IOException;
+
+import org.apache.pdfbox.cos.COSDictionary;
 import org.apache.pdfbox.cos.COSName;
-import org.apache.pdfbox.pdmodel.PDDocument;
-import org.apache.pdfbox.pdmodel.PDPage;
-import org.apache.pdfbox.pdmodel.PDResources;
-import org.apache.pdfbox.pdmodel.PDPageTree;
+import org.apache.pdfbox.pdmodel.*;
 import org.apache.pdfbox.pdmodel.common.PDMetadata;
-import org.apache.pdfbox.pdmodel.common.PDStream;
 import org.apache.pdfbox.pdmodel.interactive.action.*;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotation;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationLink;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationWidget;
 import org.apache.pdfbox.pdmodel.interactive.form.PDAcroForm;
 import org.apache.pdfbox.pdmodel.interactive.form.PDField;
-import org.apache.pdfbox.pdmodel.interactive.form.PDNonTerminalField;
-import org.apache.pdfbox.pdmodel.interactive.form.PDTerminalField;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.ModelAttribute;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
+
+import io.github.pixee.security.Filenames;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
+import stirling.software.SPDF.model.api.security.SanitizePdfRequest;
+import stirling.software.SPDF.service.CustomPDDocumentFactory;
 import stirling.software.SPDF.utils.WebResponseUtils;
 
-import java.io.IOException;
-import java.io.InputStream;
-
 @RestController
+@RequestMapping("/api/v1/security")
+@Tag(name = "Security", description = "Security APIs")
 public class SanitizeController {
 
-	@PostMapping(consumes = "multipart/form-data", value = "/sanitize-pdf")
-	@Operation(summary = "Sanitize a PDF file",
-	        description = "This endpoint processes a PDF file and removes specific elements based on the provided options. Input:PDF Output:PDF Type:SISO")
-	public ResponseEntity<byte[]> sanitizePDF(
-	        @RequestPart(required = true, value = "fileInput")
-	        @Parameter(description = "The input PDF file to be sanitized")
-	                MultipartFile inputFile,
-	        @RequestParam(name = "removeJavaScript", required = false, defaultValue = "true")
-	        @Parameter(description = "Remove JavaScript actions from the PDF if set to true")
-	                Boolean removeJavaScript,
-	        @RequestParam(name = "removeEmbeddedFiles", required = false, defaultValue = "true")
-	        @Parameter(description = "Remove embedded files from the PDF if set to true")
-	                Boolean removeEmbeddedFiles,
-	        @RequestParam(name = "removeMetadata", required = false, defaultValue = "true")
-	        @Parameter(description = "Remove metadata from the PDF if set to true")
-	                Boolean removeMetadata,
-	        @RequestParam(name = "removeLinks", required = false, defaultValue = "true")
-	        @Parameter(description = "Remove links from the PDF if set to true")
-	                Boolean removeLinks,
-	        @RequestParam(name = "removeFonts", required = false, defaultValue = "true")
-	        @Parameter(description = "Remove fonts from the PDF if set to true")
-	                Boolean removeFonts) throws IOException {
+    private final CustomPDDocumentFactory pdfDocumentFactory;
 
-	    try (PDDocument document = PDDocument.load(inputFile.getInputStream())) {
-	        if (removeJavaScript) {
-	            sanitizeJavaScript(document);
-	        }
+    @Autowired
+    public SanitizeController(CustomPDDocumentFactory pdfDocumentFactory) {
+        this.pdfDocumentFactory = pdfDocumentFactory;
+    }
 
-	        if (removeEmbeddedFiles) {
-	            sanitizeEmbeddedFiles(document);
-	        }
+    @PostMapping(consumes = "multipart/form-data", value = "/sanitize-pdf")
+    @Operation(
+            summary = "Sanitize a PDF file",
+            description =
+                    "This endpoint processes a PDF file and removes specific elements based on the provided options. Input:PDF Output:PDF Type:SISO")
+    public ResponseEntity<byte[]> sanitizePDF(@ModelAttribute SanitizePdfRequest request)
+            throws IOException {
+        MultipartFile inputFile = request.getFileInput();
+        boolean removeJavaScript = request.isRemoveJavaScript();
+        boolean removeEmbeddedFiles = request.isRemoveEmbeddedFiles();
+        boolean removeMetadata = request.isRemoveMetadata();
+        boolean removeLinks = request.isRemoveLinks();
+        boolean removeFonts = request.isRemoveFonts();
 
-	        if (removeMetadata) {
-	            sanitizeMetadata(document);
-	        }
+        PDDocument document = pdfDocumentFactory.load(inputFile);
+        if (removeJavaScript) {
+            sanitizeJavaScript(document);
+        }
 
-	        if (removeLinks) {
-	            sanitizeLinks(document);
-	        }
+        if (removeEmbeddedFiles) {
+            sanitizeEmbeddedFiles(document);
+        }
 
-	        if (removeFonts) {
-	            sanitizeFonts(document);
-	        }
+        if (removeMetadata) {
+            sanitizeMetadata(document);
+        }
 
-	        return WebResponseUtils.pdfDocToWebResponse(document, inputFile.getOriginalFilename().replaceFirst("[.][^.]+$", "") + "_sanitized.pdf");
-	    }
-	}
+        if (removeLinks) {
+            sanitizeLinks(document);
+        }
+
+        if (removeFonts) {
+            sanitizeFonts(document);
+        }
+
+        return WebResponseUtils.pdfDocToWebResponse(
+                document,
+                Filenames.toSimpleFileName(inputFile.getOriginalFilename())
+                                .replaceFirst("[.][^.]+$", "")
+                        + "_sanitized.pdf");
+    }
+
     private void sanitizeJavaScript(PDDocument document) throws IOException {
-    	for (PDPage page : document.getPages()) {
+        // Get the root dictionary (catalog) of the PDF
+        PDDocumentCatalog catalog = document.getDocumentCatalog();
+
+        // Get the Names dictionary
+        COSDictionary namesDict =
+                (COSDictionary) catalog.getCOSObject().getDictionaryObject(COSName.NAMES);
+
+        if (namesDict != null) {
+            // Get the JavaScript dictionary
+            COSDictionary javaScriptDict =
+                    (COSDictionary) namesDict.getDictionaryObject(COSName.getPDFName("JavaScript"));
+
+            if (javaScriptDict != null) {
+                // Remove the JavaScript dictionary
+                namesDict.removeItem(COSName.getPDFName("JavaScript"));
+            }
+        }
+
+        for (PDPage page : document.getPages()) {
             for (PDAnnotation annotation : page.getAnnotations()) {
                 if (annotation instanceof PDAnnotationWidget) {
                     PDAnnotationWidget widget = (PDAnnotationWidget) annotation;
@@ -84,17 +109,29 @@ public class SanitizeController {
                     if (action instanceof PDActionJavaScript) {
                         widget.setAction(null);
                     }
-				}
-			}
-	        PDAcroForm acroForm = document.getDocumentCatalog().getAcroForm();
-	        if (acroForm != null) {
-	            for (PDField field : acroForm.getFields()) {
-	                if (field.getActions().getF() instanceof PDActionJavaScript) {
-	                    field.getActions().setF(null);
-	                }
-	            }
-	        }
-	    }
+                }
+            }
+            PDAcroForm acroForm = document.getDocumentCatalog().getAcroForm();
+            if (acroForm != null) {
+                for (PDField field : acroForm.getFields()) {
+                    PDFormFieldAdditionalActions actions = field.getActions();
+                    if (actions != null) {
+                        if (actions.getC() instanceof PDActionJavaScript) {
+                            actions.setC(null);
+                        }
+                        if (actions.getF() instanceof PDActionJavaScript) {
+                            actions.setF(null);
+                        }
+                        if (actions.getK() instanceof PDActionJavaScript) {
+                            actions.setK(null);
+                        }
+                        if (actions.getV() instanceof PDActionJavaScript) {
+                            actions.setV(null);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private void sanitizeEmbeddedFiles(PDDocument document) {
@@ -102,28 +139,29 @@ public class SanitizeController {
 
         for (PDPage page : allPages) {
             PDResources res = page.getResources();
-
-            // Remove embedded files from the PDF
-            res.getCOSObject().removeItem(COSName.getPDFName("EmbeddedFiles"));
+            if (res != null && res.getCOSObject() != null) {
+                res.getCOSObject().removeItem(COSName.getPDFName("EmbeddedFiles"));
+            }
         }
     }
-    
 
     private void sanitizeMetadata(PDDocument document) {
-        PDMetadata metadata = document.getDocumentCatalog().getMetadata();
-        if (metadata != null) {
-            document.getDocumentCatalog().setMetadata(null);
+        if (document.getDocumentCatalog() != null) {
+            PDMetadata metadata = document.getDocumentCatalog().getMetadata();
+            if (metadata != null) {
+                document.getDocumentCatalog().setMetadata(null);
+            }
         }
     }
-
-
 
     private void sanitizeLinks(PDDocument document) throws IOException {
         for (PDPage page : document.getPages()) {
             for (PDAnnotation annotation : page.getAnnotations()) {
-                if (annotation instanceof PDAnnotationLink) {
+                if (annotation != null && annotation instanceof PDAnnotationLink) {
                     PDAction action = ((PDAnnotationLink) annotation).getAction();
-                    if (action instanceof PDActionLaunch || action instanceof PDActionURI) {
+                    if (action != null
+                            && (action instanceof PDActionLaunch
+                                    || action instanceof PDActionURI)) {
                         ((PDAnnotationLink) annotation).setAction(null);
                     }
                 }
@@ -133,8 +171,11 @@ public class SanitizeController {
 
     private void sanitizeFonts(PDDocument document) {
         for (PDPage page : document.getPages()) {
-            page.getResources().getCOSObject().removeItem(COSName.getPDFName("Font"));
+            if (page != null
+                    && page.getResources() != null
+                    && page.getResources().getCOSObject() != null) {
+                page.getResources().getCOSObject().removeItem(COSName.getPDFName("Font"));
+            }
         }
     }
-    
 }
